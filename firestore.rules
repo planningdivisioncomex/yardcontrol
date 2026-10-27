@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128;
+    }
+
+    // MATCH BLOCKS FOR ALL IDENTIFIED COLLECTIONS
+    match /bufferAreas/{bufferId} {
+      allow read, write: if true;
+    }
+
+    match /buffers/{bufferId} {
+      allow read, write: if true;
+    }
+
+    match /containers/{containerId} {
+      allow read, write: if true;
+    }
+
+    match /yards/{yardId} {
+      allow read, write: if true;
+    }
+
+    match /vessels/{vesselId} {
+      allow read, write: if true;
+    }
+
+    match /chartLeft/{itemId} {
+      allow read, write: if true;
+    }
+
+    match /chartRight/{itemId} {
+      allow read, write: if true;
+    }
+
+    match /logisticsData/{entryId} {
+      allow read, write: if true;
+    }
+
+    match /depots/{depotId} {
+      allow read, write: if true;
+    }
+
+    match /planner/{plannerId} {
+      allow read, write: if true;
+    }
+
+    // Configuration documents
+    match /config/{configId} {
+      allow read, write: if true;
+    }
+
+    // Test connection
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+  }
+}
+
