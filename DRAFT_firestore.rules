@@ -35,7 +35,7 @@ service cloud.firestore {
 
     function isValidYard(data) {
       return data.keys().hasAll(['name', 'type', 'capacity', 'cheio', 'vazio', 'porto', 'prontoColeta', 'delivered']) 
-        && data.keys().size() == 8
+        && data.keys().size() <= 10
         && data.name is string && data.name.size() <= 100
         && data.type is string && (data.type == 'BONDED' || data.type == 'WAREHOUSE' || data.type == 'BUFFER')
         && data.capacity is number && data.capacity >= 0
