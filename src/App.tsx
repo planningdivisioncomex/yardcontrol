@@ -4121,7 +4121,7 @@ export default function App() {
         }
         
         // Let's identify column headers (case-insensitive and trimmed)
-       const headers = data[0].map(h => String(h || '').trim().toLowerCase());
+const headers = data[0].map(h => String(h || '').trim().toLowerCase());
         
         // MAPEAMENTO DAS COLUNAS (FLEXÍVEL)
         const blIdx = headers.findIndex(h => h === 'bl' || h.includes('conhecimento') || h.includes('bill of lading'));
