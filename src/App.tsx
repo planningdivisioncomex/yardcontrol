@@ -4121,15 +4121,207 @@ export default function App() {
         }
         
         // Let's identify column headers (case-insensitive and trimmed)
-        const headers = data[0].map(h => String(h || '').trim().toLowerCase());
+       const headers = data[0].map(h => String(h || '').trim().toLowerCase());
         
-        // Map common headers flexibly
-        const idIdx = headers.findIndex(h => h.includes('ident') || h.includes('id') || h.includes('box') || h.includes('nº') || h.includes('número') || h.includes('numero') || h.includes('container') || h.includes('箱号'));
-        const sizeIdx = headers.findIndex(h => h.includes('taman') || h.includes('size') || h.includes('dimen') || h.includes('尺寸'));
-        const statusIdx = headers.findIndex(h => h.includes('stat') || h.includes('situa') || h.includes('estado') || h.includes('状态'));
-        const categoryIdx = headers.findIndex(h => h.includes('categ') || h.includes('tipo') || h.includes('class') || h.includes('类别'));
-        const vesselIdx = headers.findIndex(h => h.includes('navio') || h.includes('vessel') || h.includes('ship') || h.includes('barco') || h.includes('船舶'));
-        
+        // MAPEAMENTO DAS COLUNAS (FLEXÍVEL)
+        const blIdx = headers.findIndex(h => h === 'bl' || h.includes('conhecimento') || h.includes('bill of lading'));
+        const containerIdx = headers.findIndex(h => h.includes('container') || h.includes('contêiner') || h.includes('conteiner') || h.includes('box') || h.includes('箱号') || h === 'cntr');
+        const warehouseIdx = headers.findIndex(h => h.includes('warehouse') || h.includes('armazem') || h.includes('armando') || h.includes('pátio') || h.includes('patio') || h.includes('local') || h.includes('仓库') || h.includes('堆场'));
+        const navioIdx = headers.findIndex(h => h.includes('navio') || h.includes('vessel') || h.includes('ship') || h.includes('船舶'));
+        const etaIdx = headers.findIndex(h => h === 'eta' || h.includes('chegada') || h.includes('prev'));
+        const freeTimeIdx = headers.findIndex(h => h.includes('free time') || h.includes('freetime') || h.includes('demo') || h.includes('validade'));
+        const componenteIdx = headers.findIndex(h => h.includes('comp') || h.includes('kd') || h.includes('skd'));
+        const modeloIdx = headers.findIndex(h => h.includes('model') || h.includes('modelo') || h.includes('veiculo') || h.includes('车型'));
+        const loteIdx = headers.findIndex(h => h.includes('lote') || h.includes('lot') || h.includes('batch'));
+        const progIdx = headers.findIndex(h => h.includes('prog') || h.includes('date') || h.includes('sched') || h.includes('data') || h.includes('entrega') || h.includes('saida'));
+        const transIdx = headers.findIndex(h => h.includes('transp') || h.includes('carrier') || h.includes('logistica'));
+        const statusComexIdx = headers.findIndex(h => h === 'status' || h.includes('situação') || h.includes('situacao')); // NOVA COLUNA DE STATUS
+
+        if (containerIdx === -1) {
+          alert(language === 'zh'
+            ? '未找到“CONTAINER / 箱号”列！请检查表格格式。'
+            : 'Coluna "CONTAINER" não encontrada! Certifique-se de que a planilha possui a coluna "CONTAINER".');
+          return;
+        }
+
+        // MOTOR DE NORMALIZAÇÃO DE PÁTIOS ATUALIZADO
+        const getYardKeyFromWarehouseName = (name: string): string | null => {
+          const clean = String(name || '').trim().toLowerCase();
+          
+          if (clean.includes('tecon')) return 'tecon';
+          if (clean.includes('tpc') && clean.includes('p5')) return 'tpc_p5';
+          if (clean.includes('tpc')) return 'tpc';
+          if (clean.includes('intermar') || clean.includes('inter') || clean.includes('a23') || clean.includes('tps')) {
+             if (clean.includes('cdex') || clean.includes('ag')) return 'ag';
+             return 'intermaritima';
+          }
+          if (clean.includes('clia') || clean.includes('emporio')) return 'clia';
+          if (clean.includes('multilog')) return 'multilog';
+          if (clean.includes('gabardo')) return 'gabardo';
+          if (clean.includes('logic')) return 'logic';
+          if (clean.includes('recom')) return 'recom';
+          
+          if (clean.includes('cts') || clean.includes('pontual')) return 'cts';
+          
+          return null;
+        };
+
+        // MOTOR DE NORMALIZAÇÃO DE STATUS ADUANEIRO
+        const getInternalStatusAndCategory = (rawStatus: string, defaultType: string) => {
+           const st = (rawStatus || '').toUpperCase();
+           if (st.includes('PORT')) return { status: 'CHEIO', category: 'PORTO' };
+           if (st.includes('READY') || st.includes('CLEARED')) return { status: 'CHEIO', category: 'PRONTO_COLETA' };
+           if (st.includes('DELIVERED')) return { status: 'VAZIO', category: 'DELIVERED' }; // Assumimos que entregue já está vazio ou em processo
+           if (st.includes('PRESENCE') || st.includes('DECLARATION')) return { status: 'CHEIO', category: defaultType };
+           return { status: 'CHEIO', category: defaultType };
+        };
+
+        let successCount = 0;
+        let unknownYardsCount = 0;
+
+        const yardsInExcel = new Set<string>();
+        const parsedContainers: Container[] = [];
+
+        const yardStatsMap: { [key: string]: { total: number; porto: number; pronto: number, vazio: number, delivered: number } } = {};
+
+        for (let i = 1; i < data.length; i++) {
+          const row = data[i];
+          if (!row || row.length === 0) continue;
+
+          const rawId = row[containerIdx];
+          if (rawId === undefined || rawId === null || String(rawId).trim() === '') continue;
+
+          const id = String(rawId).trim().toUpperCase();
+          if (!id) continue;
+
+          const rawWh = warehouseIdx !== -1 ? row[warehouseIdx] : '';
+          const yardKey = getYardKeyFromWarehouseName(String(rawWh));
+
+          if (!yardKey) {
+            unknownYardsCount++;
+            continue;
+          }
+
+          yardsInExcel.add(yardKey);
+          
+          // Inicializa o contador do pátio dinamicamente se não existir
+          if (!yardStatsMap[yardKey]) {
+              yardStatsMap[yardKey] = { total: 0, porto: 0, pronto: 0, vazio: 0, delivered: 0 };
+          }
+
+          const bl = blIdx !== -1 && row[blIdx] !== undefined && row[blIdx] !== null ? String(row[blIdx]).trim() : "";
+          const vesselName = navioIdx !== -1 && row[navioIdx] !== undefined && row[navioIdx] !== null ? String(row[navioIdx]).trim() : "N/A";
+          const eta = etaIdx !== -1 && row[etaIdx] !== undefined && row[etaIdx] !== null ? formatExcelDateIfNeeded(row[etaIdx]) : "";
+          const freeTime = freeTimeIdx !== -1 && row[freeTimeIdx] !== undefined && row[freeTimeIdx] !== null ? formatExcelDateIfNeeded(row[freeTimeIdx]) : "";
+          const componente = componenteIdx !== -1 && row[componenteIdx] !== undefined && row[componenteIdx] !== null ? String(row[componenteIdx]).trim() : "KD";
+          const modelo = modeloIdx !== -1 && row[modeloIdx] !== undefined && row[modeloIdx] !== null ? String(row[modeloIdx]).trim() : "";
+          const lote = loteIdx !== -1 && row[loteIdx] !== undefined && row[loteIdx] !== null ? String(row[loteIdx]).trim() : "";
+          const programacao = progIdx !== -1 && row[progIdx] !== undefined && row[progIdx] !== null ? formatExcelDateIfNeeded(row[progIdx]) : "";
+          const transportadora = transIdx !== -1 && row[transIdx] !== undefined && row[transIdx] !== null ? String(row[transIdx]).trim() : "";
+          const rawStatus = statusComexIdx !== -1 && row[statusComexIdx] !== undefined ? String(row[statusComexIdx]) : "";
+
+          const defaultCategory = (yards[yardKey]?.type === 'BONDED' ? 'PRONTO_COLETA' : 'GERAL');
+          const { status, category } = getInternalStatusAndCategory(rawStatus, defaultCategory);
+
+          if (status === 'CHEIO') yardStatsMap[yardKey].total++;
+          if (status === 'VAZIO') yardStatsMap[yardKey].vazio++;
+          
+          if (category === 'PORTO') yardStatsMap[yardKey].porto++;
+          else if (category === 'PRONTO_COLETA') yardStatsMap[yardKey].pronto++;
+          else if (category === 'DELIVERED') yardStatsMap[yardKey].delivered++;
+
+          parsedContainers.push({
+            id,
+            yardId: yardKey,
+            vesselName: vesselName || "N/A",
+            size: "40' HC",
+            status: status as 'CHEIO'|'VAZIO',
+            category: category as 'PORTO' | 'PRONTO_COLETA' | 'DELIVERED' | 'GERAL',
+            bl,
+            eta,
+            freeTime,
+            componente,
+            modelo,
+            lote,
+            programacao,
+            transportadora
+          });
+
+          successCount++;
+        }
+
+        setContainers(prev => {
+          const kept = prev.filter(c => !yardsInExcel.has(c.yardId));
+          return [...kept, ...parsedContainers];
+        });
+
+        setYards(prev => {
+          const updated = { ...prev };
+          yardsInExcel.forEach(yardKey => {
+            if (updated[yardKey]) {
+              const stats = yardStatsMap[yardKey];
+              updated[yardKey] = {
+                ...updated[yardKey],
+                cheio: stats.total,
+                vazio: stats.vazio,
+                porto: stats.porto,
+                prontoColeta: stats.pronto,
+                delivered: stats.delivered
+              };
+            }
+          });
+          try { localStorage.setItem('byd_yards_data', JSON.stringify(updated)); } catch {}
+          return updated;
+        });
+
+        try {
+          const batch = writeBatch(db);
+
+          const containersSnap = await getDocs(collection(db, 'containers'));
+          containersSnap.forEach(dSnap => {
+            const cData = dSnap.data();
+            if (cData.yardId && yardsInExcel.has(cData.yardId)) {
+              batch.delete(doc(db, 'containers', dSnap.id));
+            }
+          });
+
+          parsedContainers.forEach(c => {
+            batch.set(doc(db, 'containers', c.id), {
+              id: c.id,
+              yardId: c.yardId,
+              vesselName: c.vesselName,
+              size: c.size,
+              status: c.status,
+              category: c.category,
+              bl: c.bl,
+              eta: c.eta,
+              freeTime: c.freeTime,
+              componente: c.componente,
+              modelo: c.modelo,
+              lote: c.lote,
+              programacao: c.programacao,
+              transportadora: c.transportadora
+            });
+          });
+
+          for (const yardKey of Array.from(yardsInExcel)) {
+            const stats = yardStatsMap[yardKey];
+            const yardRef = doc(db, 'yards', yardKey);
+            if (stats) {
+              batch.set(yardRef, {
+                cheio: stats.total,
+                vazio: stats.vazio,
+                porto: stats.porto,
+                prontoColeta: stats.pronto,
+                delivered: stats.delivered
+              }, { merge: true });
+            }
+          }
+
+          await batch.commit();
+        } catch (dbErr) {
+          console.warn("Erro ao salvar contêineres e pátios no Firestore:", dbErr);
+        }
         if (idIdx === -1) {
           alert(tt(
             'Coluna "Identificacao" (ou similar) não encontrada! Certifique-se de usar os cabeçalhos padrão.',
