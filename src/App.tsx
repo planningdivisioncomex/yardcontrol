@@ -4567,7 +4567,7 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
           return;
         }
         
-        const headers = data[0].map(h => String(h || '').trim().toLowerCase());
+const headers = data[0].map(h => String(h || '').trim().toLowerCase());
         
         const blIdx = headers.findIndex(h => h === 'bl' || h.includes('conhecimento') || h.includes('bill of lading'));
         const containerIdx = headers.findIndex(h => h.includes('container') || h.includes('contêiner') || h.includes('conteiner') || h.includes('box') || h.includes('箱号') || h === 'cntr');
@@ -4580,37 +4580,45 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
         const loteIdx = headers.findIndex(h => h.includes('lote') || h.includes('lot') || h.includes('batch'));
         const progIdx = headers.findIndex(h => h.includes('prog') || h.includes('date') || h.includes('sched') || h.includes('data') || h.includes('entrega') || h.includes('saida'));
         const transIdx = headers.findIndex(h => h.includes('transp') || h.includes('carrier') || h.includes('logistica'));
+        const statusComexIdx = headers.findIndex(h => h === 'status' || h.includes('situação') || h.includes('situacao')); 
 
         if (containerIdx === -1) {
-          alert(language === 'zh'
-            ? '未找到“CONTAINER / 箱号”列！请检查表格格式。'
-            : 'Coluna "CONTAINER" não encontrada! Certifique-se de que a planilha possui a coluna "CONTAINER".');
+          alert('Coluna "CONTAINER" não encontrada! Certifique-se de que a planilha possui a coluna correspondente.');
           return;
         }
 
+        // FUNÇÃO BLINDADA PARA TIRAR ACENTOS E MAPEAR PÁTIOS (Mesmo se mudarem o nome na planilha)
+        const normalizeText = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        
         const getYardKeyFromWarehouseName = (name: string): string | null => {
-          const clean = String(name || '').trim().toLowerCase();
-          if (clean.includes('tecon')) return 'tecon';
-          if (clean.includes('intermaritima') || clean.includes('intermar') || clean.includes('inter') || clean.includes('maritima') || clean.includes('a23') || clean.includes('tps')) return 'intermaritima';
-          if (clean.includes('tpc')) return 'tpc';
-          if (clean.includes('clia') || clean.includes('emporio')) return 'clia';
-          if (clean.includes('ag') || clean.includes('cdex')) return 'ag';
-          if (clean.includes('multilog')) return 'multilog';
+          const clean = normalizeText(String(name || '').trim());
           
-          if (clean.includes('cts')) {
-            if (clean.includes('jew')) return 'cts_jew';
-            if (clean.includes('uni')) return 'cts_uni';
-            if (clean.includes('vbr')) return 'cts_vbr';
-            if (clean.includes('logic')) return 'logic';
-            return 'cts'; // default CTS fallback to PONTUAL
+          if (clean.includes('tecon')) return 'tecon';
+          if (clean.includes('tpc') && clean.includes('p5')) return 'tpc_p5';
+          if (clean.includes('tpc')) return 'tpc';
+          // Cobertura completa para qualquer variação de "Intermaritima"
+          if (clean.includes('inter') || clean.includes('maritima') || clean.includes('a23') || clean.includes('tps') || clean.includes('area 23')) {
+             if (clean.includes('cdex') || clean.includes('ag')) return 'ag';
+             return 'intermaritima';
           }
-          if (clean.includes('pontual')) return 'cts';
-          if (clean.includes('jew')) return 'cts_jew';
-          if (clean.includes('uni')) return 'cts_uni';
-          if (clean.includes('vbr')) return 'cts_vbr';
-          if (clean.includes('logic')) return 'logic'; // Separate LOGIC warehouse
-
+          if (clean.includes('clia') || clean.includes('emporio')) return 'clia';
+          if (clean.includes('multilog')) return 'multilog';
+          if (clean.includes('gabardo')) return 'gabardo';
+          if (clean.includes('logic')) return 'logic';
+          if (clean.includes('recom')) return 'recom';
+          
+          if (clean.includes('cts') || clean.includes('pontual')) return 'cts';
+          
           return null;
+        };
+
+        const getInternalStatusAndCategory = (rawStatus: string, defaultType: string) => {
+           const st = normalizeText(rawStatus || '').toUpperCase();
+           if (st.includes('PORT')) return { status: 'CHEIO', category: 'PORTO' };
+           if (st.includes('READY') || st.includes('CLEARED')) return { status: 'CHEIO', category: 'PRONTO_COLETA' };
+           if (st.includes('DELIVERED') || st.includes('ENTREG')) return { status: 'VAZIO', category: 'DELIVERED' }; 
+           if (st.includes('PRESENCE') || st.includes('DECLARA')) return { status: 'CHEIO', category: defaultType };
+           return { status: 'CHEIO', category: defaultType };
         };
 
         let successCount = 0;
@@ -4618,20 +4626,7 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
 
         const yardsInExcel = new Set<string>();
         const parsedContainers: Container[] = [];
-
-        const yardStatsMap: { [key: string]: { total: number; porto: number; pronto: number } } = {
-          tecon: { total: 0, porto: 0, pronto: 0 },
-          intermaritima: { total: 0, porto: 0, pronto: 0 },
-          tpc: { total: 0, porto: 0, pronto: 0 },
-          clia: { total: 0, porto: 0, pronto: 0 },
-          ag: { total: 0, porto: 0, pronto: 0 },
-          cts: { total: 0, porto: 0, pronto: 0 },
-          cts_jew: { total: 0, porto: 0, pronto: 0 },
-          cts_uni: { total: 0, porto: 0, pronto: 0 },
-          cts_vbr: { total: 0, porto: 0, pronto: 0 },
-          logic: { total: 0, porto: 0, pronto: 0 },
-          multilog: { total: 0, porto: 0, pronto: 0 }
-        };
+        const yardStatsMap: { [key: string]: { total: number; porto: number; pronto: number, vazio: number, delivered: number } } = {};
 
         for (let i = 1; i < data.length; i++) {
           const row = data[i];
@@ -4652,32 +4647,42 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
           }
 
           yardsInExcel.add(yardKey);
-
-          const bl = blIdx !== -1 && row[blIdx] !== undefined && row[blIdx] !== null ? String(row[blIdx]).trim() : "";
-          const vesselName = navioIdx !== -1 && row[navioIdx] !== undefined && row[navioIdx] !== null ? String(row[navioIdx]).trim() : "N/A";
-          const eta = etaIdx !== -1 && row[etaIdx] !== undefined && row[etaIdx] !== null ? formatExcelDateIfNeeded(row[etaIdx]) : "";
-          const freeTime = freeTimeIdx !== -1 && row[freeTimeIdx] !== undefined && row[freeTimeIdx] !== null ? formatExcelDateIfNeeded(row[freeTimeIdx]) : "";
-          const componente = componenteIdx !== -1 && row[componenteIdx] !== undefined && row[componenteIdx] !== null ? String(row[componenteIdx]).trim() : "KD";
-          const modelo = modeloIdx !== -1 && row[modeloIdx] !== undefined && row[modeloIdx] !== null ? String(row[modeloIdx]).trim() : "";
-          const lote = loteIdx !== -1 && row[loteIdx] !== undefined && row[loteIdx] !== null ? String(row[loteIdx]).trim() : "";
-          const programacao = progIdx !== -1 && row[progIdx] !== undefined && row[progIdx] !== null ? formatExcelDateIfNeeded(row[progIdx]) : "";
-          const transportadora = transIdx !== -1 && row[transIdx] !== undefined && row[transIdx] !== null ? String(row[transIdx]).trim() : "";
-
-          const category = (yards[yardKey]?.type === 'BONDED' ? 'PRONTO_COLETA' : 'GERAL') as 'PORTO' | 'PRONTO_COLETA' | 'DELIVERED' | 'GERAL';
-
-          if (yardStatsMap[yardKey]) {
-            yardStatsMap[yardKey].total++;
-            if (category === 'PORTO') yardStatsMap[yardKey].porto++;
-            else yardStatsMap[yardKey].pronto++;
+          
+          if (!yardStatsMap[yardKey]) {
+              yardStatsMap[yardKey] = { total: 0, porto: 0, pronto: 0, vazio: 0, delivered: 0 };
           }
+
+          // Blindagem contra undefined (quebrando a escrita no Firestore)
+          const cleanVal = (val: any) => val !== undefined && val !== null ? String(val).trim() : "";
+          
+          const bl = cleanVal(blIdx !== -1 ? row[blIdx] : "");
+          const vesselName = navioIdx !== -1 && cleanVal(row[navioIdx]) ? cleanVal(row[navioIdx]) : "N/A";
+          const eta = etaIdx !== -1 ? formatExcelDateIfNeeded(row[etaIdx]) || "" : "";
+          const freeTime = freeTimeIdx !== -1 ? formatExcelDateIfNeeded(row[freeTimeIdx]) || "" : "";
+          const componente = cleanVal(componenteIdx !== -1 ? row[componenteIdx] : "KD");
+          const modelo = cleanVal(modeloIdx !== -1 ? row[modeloIdx] : "");
+          const lote = cleanVal(loteIdx !== -1 ? row[loteIdx] : "");
+          const programacao = progIdx !== -1 ? formatExcelDateIfNeeded(row[progIdx]) || "" : "";
+          const transportadora = cleanVal(transIdx !== -1 ? row[transIdx] : "");
+          const rawStatus = cleanVal(statusComexIdx !== -1 ? row[statusComexIdx] : "");
+
+          const defaultCategory = (yards[yardKey]?.type === 'BONDED' ? 'PRONTO_COLETA' : 'GERAL');
+          const { status, category } = getInternalStatusAndCategory(rawStatus, defaultCategory);
+
+          if (status === 'CHEIO') yardStatsMap[yardKey].total++;
+          if (status === 'VAZIO') yardStatsMap[yardKey].vazio++;
+          
+          if (category === 'PORTO') yardStatsMap[yardKey].porto++;
+          else if (category === 'PRONTO_COLETA') yardStatsMap[yardKey].pronto++;
+          else if (category === 'DELIVERED') yardStatsMap[yardKey].delivered++;
 
           parsedContainers.push({
             id,
             yardId: yardKey,
-            vesselName: vesselName || "N/A",
+            vesselName,
             size: "40' HC",
-            status: "CHEIO",
-            category,
+            status: status as 'CHEIO'|'VAZIO',
+            category: category as 'PORTO' | 'PRONTO_COLETA' | 'DELIVERED' | 'GERAL',
             bl,
             eta,
             freeTime,
@@ -4691,6 +4696,7 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
           successCount++;
         }
 
+        // Interface Update (Optimistic UI)
         setContainers(prev => {
           const kept = prev.filter(c => !yardsInExcel.has(c.yardId));
           return [...kept, ...parsedContainers];
@@ -4704,9 +4710,10 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
               updated[yardKey] = {
                 ...updated[yardKey],
                 cheio: stats.total,
-                vazio: 0,
+                vazio: stats.vazio,
                 porto: stats.porto,
-                prontoColeta: stats.pronto
+                prontoColeta: stats.pronto,
+                delivered: stats.delivered
               };
             }
           });
@@ -4714,19 +4721,33 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
           return updated;
         });
 
+        // ====================================================
+        // FIRESTORE SAFE BATCHING (Para lidar com arquivos de 7000+ linhas)
+        // ====================================================
         try {
-          const batch = writeBatch(db);
+          const MAX_BATCH_SIZE = 400; // Limite seguro abaixo dos 500 do firebase
+          let currentBatch = writeBatch(db);
+          let opCount = 0;
+          let batchPromises = [];
 
+          // Remove containers antigos dos pátios atualizados
           const containersSnap = await getDocs(collection(db, 'containers'));
           containersSnap.forEach(dSnap => {
             const cData = dSnap.data();
             if (cData.yardId && yardsInExcel.has(cData.yardId)) {
-              batch.delete(doc(db, 'containers', dSnap.id));
+              currentBatch.delete(doc(db, 'containers', dSnap.id));
+              opCount++;
+              if (opCount >= MAX_BATCH_SIZE) {
+                batchPromises.push(currentBatch.commit());
+                currentBatch = writeBatch(db);
+                opCount = 0;
+              }
             }
           });
 
+          // Insere novos containers em blocos
           parsedContainers.forEach(c => {
-            batch.set(doc(db, 'containers', c.id), {
+            currentBatch.set(doc(db, 'containers', c.id), {
               id: c.id,
               yardId: c.yardId,
               vesselName: c.vesselName,
@@ -4742,44 +4763,50 @@ const headers = data[0].map(h => String(h || '').trim().toLowerCase());
               programacao: c.programacao,
               transportadora: c.transportadora
             });
+            opCount++;
+            if (opCount >= MAX_BATCH_SIZE) {
+              batchPromises.push(currentBatch.commit());
+              currentBatch = writeBatch(db);
+              opCount = 0;
+            }
           });
 
+          // Atualiza as chaves do Pátio
           for (const yardKey of Array.from(yardsInExcel)) {
             const stats = yardStatsMap[yardKey];
             const yardRef = doc(db, 'yards', yardKey);
             if (stats) {
-              batch.set(yardRef, {
+              currentBatch.set(yardRef, {
                 cheio: stats.total,
-                vazio: 0,
+                vazio: stats.vazio,
                 porto: stats.porto,
-                prontoColeta: stats.pronto
+                prontoColeta: stats.pronto,
+                delivered: stats.delivered
               }, { merge: true });
+              opCount++;
+              if (opCount >= MAX_BATCH_SIZE) {
+                batchPromises.push(currentBatch.commit());
+                currentBatch = writeBatch(db);
+                opCount = 0;
+              }
             }
           }
 
-          await batch.commit();
+          if (opCount > 0) {
+             batchPromises.push(currentBatch.commit());
+          }
+
+          await Promise.all(batchPromises); // Aguarda todas as fatias do upload
+          
+          let alertMsg = language === 'zh' 
+            ? `🎉 库存成功更新！\n- 导入集装箱数量: ${successCount}\n- 忽略了 ${unknownYardsCount} 行无法匹配堆场的行。` 
+            : `🎉 Estoque atualizado no servidor com sucesso!\n- Contêineres importados: ${successCount}\n- Linhas com recintos desconhecidos ignoradas: ${unknownYardsCount}`;
+          alert(alertMsg);
+
         } catch (dbErr) {
-          console.warn("Erro ao salvar contêineres e pátios no Firestore:", dbErr);
+          console.error("Erro fatal ao salvar contêineres e pátios no Firestore:", dbErr);
+          alert("Erro crítico ao sincronizar servidor. Os dados aparecem na tela, mas não foram salvos.");
         }
-
-        let alertMsg = '';
-        if (language === 'zh') {
-          alertMsg = `🎉 库存成功更新！\n- 导入集装箱数量: ${successCount}\n- 覆盖更新了 ${yardsInExcel.size} 个堆场/仓库。\n- 忽略了 ${unknownYardsCount} 行无法匹配堆场的行。`;
-        } else {
-          alertMsg = `🎉 Estoque atualizado com sucesso!\n- Contêineres importados: ${successCount}\n- Pátios/Armaréns atualizados: ${Array.from(yardsInExcel).map(k => yards[k]?.name || k).join(', ')}\n- Linhas com recintos desconhecidos ignoradas: ${unknownYardsCount}`;
-        }
-        alert(alertMsg);
-
-        const gInput = document.getElementById('global_excel_upload_input') as HTMLInputElement;
-        if (gInput) gInput.value = '';
-
-      } catch (err) {
-        console.error("Erro ao processar planilha global:", err);
-        alert(language === 'zh'
-          ? "处理 Excel 时出错，请检查格式是否正确！"
-          : "Erro ao processar arquivo Excel. Verifique se o formato está correto.");
-      }
-    };
     reader.readAsBinaryString(file);
   };
 
